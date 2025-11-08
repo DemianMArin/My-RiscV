@@ -230,20 +230,30 @@ class FiveStageCore(Core):
 
         # --------------------- IF stage ----------------------
         if not self.state.IF.nop:
-            instruction_bytes = self.ext_imem.read_instr(self.state.IF.PC)
-            if instruction_bytes == "1" * 32:
-                # HALT detected - don't update ID with HALT, preserve current ID instruction
-                self.nextState.ID.nop = True
-                self.nextState.IF.nop = True
-                self.nextState.ID.instruction_bytes = self.state.ID.instruction_bytes
-                self.print_current_instruction(self.cycle, "IF", "Halt")
+            # Check if ID stage already set nextState.ID (e.g., branch flush)
+            # If nextState.ID.nop is True and different from state.ID.nop, it was set by branch
+            id_already_set = hasattr(self.nextState, 'ID') and hasattr(self.nextState.ID, 'nop') and \
+                           self.nextState.ID.nop and not self.state.ID.nop
+
+            if id_already_set:
+                # Branch flush occurred - don't overwrite ID, just update PC for next fetch
+                self.nextState.IF.PC = self.nextState.IF.PC  # Keep the PC set by branch
+                self.print_current_instruction(self.cycle, "IF", "flushed by branch")
             else:
-                # Normal instruction - update ID
-                self.nextState.ID.instruction_bytes = instruction_bytes
-                self.nextState.ID.nop = False
-                self.nextState.IF.PC = self.state.IF.PC + 4
-                self.nextState.IF.instruction_count = self.nextState.IF.instruction_count + 1
-                self.print_current_instruction(self.cycle, "IF", instruction_bytes)
+                instruction_bytes = self.ext_imem.read_instr(self.state.IF.PC)
+                if instruction_bytes == "1" * 32:
+                    # HALT detected - don't update ID with HALT, preserve current ID instruction
+                    self.nextState.ID.nop = True
+                    self.nextState.IF.nop = True
+                    self.nextState.ID.instruction_bytes = self.state.ID.instruction_bytes
+                    self.print_current_instruction(self.cycle, "IF", "Halt")
+                else:
+                    # Normal instruction - update ID
+                    self.nextState.ID.instruction_bytes = instruction_bytes
+                    self.nextState.ID.nop = False
+                    self.nextState.IF.PC = self.state.IF.PC + 4
+                    self.nextState.IF.instruction_count = self.nextState.IF.instruction_count + 1
+                    self.print_current_instruction(self.cycle, "IF", instruction_bytes)
         else:
             # IF is nop - preserve ID instruction from previous cycle
             from models import IDState

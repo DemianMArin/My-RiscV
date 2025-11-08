@@ -453,7 +453,12 @@ class InstructionBBase(InstructionBase, ABC):
 
         if self.take_branch(operand1, operand2):
             self.nextState.IF.PC = self.state.IF.PC + self.imm - 4
-            # Don't set ID.nop - let IF fetch from new PC and populate ID normally
+            # Flush the speculatively fetched instruction
+            from models import IDState
+            id_state = IDState()
+            id_state.nop = True
+            id_state.instruction_bytes = self.state.ID.instruction_bytes
+            self.nextState.ID = id_state
         ex_state.nop = True
 
         self.nextState.EX = ex_state
@@ -484,8 +489,12 @@ class InstructionJBase(InstructionBase, ABC):
         )
 
         self.nextState.IF.PC = self.state.IF.PC + self.imm - 4
-        self.nextState.ID.nop = True
-        self.state.IF.nop = True
+        # Flush the speculatively fetched instruction
+        from models import IDState
+        id_state = IDState()
+        id_state.nop = True
+        id_state.instruction_bytes = self.state.ID.instruction_bytes
+        self.nextState.ID = id_state
 
         self.nextState.EX = ex_state
 

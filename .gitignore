@@ -2,7 +2,6 @@ __pycache__/
 .vscode
 notes.md
 output.txt
-compare_outputs.py
 *.synctex.gz
 *.log
 submissions/Data/FS_DMEMResult.txt
