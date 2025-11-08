@@ -3,7 +3,6 @@ import json
 from bitstring import BitArray
 
 
-# TODO: set nop default to false and handle it in init for core class
 class InsMem(object):
 
     def __init__(self, name, io_dir, **kwargs):

@@ -9,12 +9,6 @@ from riscvmodel.isa import Instruction
 from models import DataMem, RegisterFile, State, EXState, WBState, MEMState
 
 
-# TODO:
-#   1. NOP Carry forwarding
-#   2. Halt logic
-#   3. Hazard Handling
-#   4. Handle B and J type instructions
-
 class InstructionBase(metaclass=abc.ABCMeta):
 
     def __init__(self, instruction: Instruction, memory: DataMem, registers: RegisterFile, state: State,
@@ -58,8 +52,8 @@ class InstructionBase(metaclass=abc.ABCMeta):
             nop=self.state.MEM.nop,
             store_data=store_data_value,
             write_register_addr=self.state.MEM.write_register_addr,
-            rs1=self.state.MEM.rs1,  # ADD: Propagate rs1 from MEM to WB
-            rs2=self.state.MEM.rs2,  # ADD: Propagate rs2 from MEM to WB
+            rs1=0,  # WB stage doesn't need source register tracking
+            rs2=0,  # WB stage doesn't need source register tracking
             write_back_enable=self.state.MEM.write_back_enable,
             halt=self.state.MEM.halt
         )
@@ -199,6 +193,7 @@ class InstructionRBase(InstructionBase, ABC):
         mem_state.set_attributes(
             instruction_ob=self,
             nop=self.state.EX.nop,
+            store_data=self.state.MEM.alu_result,  # Propagate previous MEM.ALUresult
             write_register_addr=self.state.EX.destination_register,
             rs1=self.state.EX.rs1,  # ADD: Propagate rs1 from EX to MEM
             rs2=self.state.EX.rs2,  # ADD: Propagate rs2 from EX to MEM
@@ -280,6 +275,7 @@ class InstructionIBase(InstructionBase, ABC):
         mem_state.set_attributes(
             instruction_ob=self,
             nop=self.state.EX.nop,
+            store_data=self.state.MEM.alu_result,  # Propagate previous MEM.ALUresult
             write_register_addr=self.state.EX.destination_register,
             rs1=self.state.EX.rs1,  # ADD: Propagate rs1 from EX to MEM
             rs2=self.state.EX.rs2,  # ADD: Propagate rs2 from EX to MEM
@@ -311,12 +307,13 @@ class InstructionSBase(InstructionBase, ABC):
             operand1=self.registers.read_rf(self.rs1),
             operand2=self.registers.read_rf(self.rs2),  # FIXED: Should be rs2 value, not immediate
             store_data=self.registers.read_rf(self.rs2),
-            destination_register=self.rs2,
+            destination_register=0,  # S-type doesn't write to registers
             rs1=self.rs1,  # ADD: Set source register 1 address
             rs2=self.rs2,  # ADD: Set source register 2 address
             imm=self.imm,  # ADD: S-type instructions have immediates
             is_i_type=1,  # ADD: S-type instructions have is_I_type = 1
             write_data_mem=True,
+            write_back_enable=False,  # S-type doesn't write back to registers
             halt=self.state.ID.halt
         )
         # Stall - insert NOP bubble
