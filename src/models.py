@@ -172,11 +172,18 @@ class EXState(IntermediateState):
         read_data1 = '{:032b}'.format(self.operand1 & 0xffffffff)
         read_data2 = '{:032b}'.format(self.operand2 & 0xffffffff)
 
-        # Format immediate - 32 bits if no instruction, 12 bits if there's an instruction
+        # Format immediate based on instruction type
         if self.instr_binary == "":
             imm = '{:032b}'.format(self.imm & 0xffffffff)
         else:
-            imm = '{:012b}'.format(self.imm & 0xfff)
+            # Extract opcode (bits [6:0]) to determine instruction type
+            opcode = self.instr_binary[-7:] if len(self.instr_binary) >= 7 else "0000000"
+            if opcode == "1100011":  # Branch instructions (BEQ, BNE, etc.)
+                imm = '{:013b}'.format(self.imm & 0x1fff)  # 13 bits for branches
+            elif opcode == "1101111":  # JAL instruction
+                imm = '{:021b}'.format(self.imm & 0x1fffff)  # 21 bits for JAL
+            else:  # I-type, R-type, S-type, etc.
+                imm = '{:012b}'.format(self.imm & 0xfff)  # 12 bits
 
         # Format register addresses as 5-bit binary strings
         rs = '{:05b}'.format(self.rs1 & 0x1f)

@@ -444,15 +444,16 @@ class InstructionBBase(InstructionBase, ABC):
         ex_state = EXState()
         ex_state.instruction_ob = self
         ex_state.instr_binary = self.state.ID.instruction_bytes  # ADD: Binary instruction string
+        ex_state.operand1 = operand1  # ADD: Set operand1 value
+        ex_state.operand2 = operand2  # ADD: Set operand2 value
         ex_state.rs1 = self.rs1  # ADD: Set source register 1 address
         ex_state.rs2 = self.rs2  # ADD: Set source register 2 address
         ex_state.imm = self.imm  # ADD: B-type instructions have immediates
-        ex_state.is_i_type = 1  # ADD: B-type instructions have is_I_type = 1
+        ex_state.is_i_type = 0  # FIX: B-type instructions should have is_I_type = 0, not 1
 
         if self.take_branch(operand1, operand2):
             self.nextState.IF.PC = self.state.IF.PC + self.imm - 4
-            self.nextState.ID.nop = True
-            self.state.IF.nop = True
+            # Don't set ID.nop - let IF fetch from new PC and populate ID normally
         ex_state.nop = True
 
         self.nextState.EX = ex_state

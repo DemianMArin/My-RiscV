@@ -12,6 +12,8 @@ To test with different files place the `dmem.txt` and `imem.txt` from `Test/` in
 
 ## Output
 
+The outputs will be in the same 'submissions/Data/` folder.
+
 - 📁 FS_DMEMResult.txt
 - 📁  FS_RFResult.txt
 - 📁  PerformanceMetrics.txt
