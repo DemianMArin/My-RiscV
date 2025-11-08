@@ -2,4 +2,5 @@ __pycache__/
 .vscode
 notes.md
 output.txt
+compare_outputs.py
 
