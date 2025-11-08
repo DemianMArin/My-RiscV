@@ -5,5 +5,5 @@ output.txt
 compare_outputs.py
 *.synctex.gz
 *.log
-submissions/Data/
+submissions/Data/*
 
