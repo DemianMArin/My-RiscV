@@ -5,5 +5,11 @@ output.txt
 compare_outputs.py
 *.synctex.gz
 *.log
-submissions/Data/*
+submissions/Data/FS_DMEMResult.txt
+submissions/Data/FS_RFResult.txt
+submissions/Data/PerformanceMetrics_Result.txt
+submissions/Data/SS_DMEMResult.txt
+submissions/Data/SS_RFResult.txt
+submissions/Data/StateResult_FS.txt
+submissions/Data/StateResult_SS.txt
 
