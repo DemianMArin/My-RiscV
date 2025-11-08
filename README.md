@@ -8,11 +8,11 @@ cd src
 python main.py --iodir {absolute path of data directory
 ```
 
-To test with different files place the `dmem.txt` and `imem.txt` from `Test/` into `submissions/Data/`
+To test with different files place the `dmem.txt` and `imem.txt` from `Test/` into `submissions/Data/`. Or run with complete path.
 
 ## Output
 
-The outputs will be in the same 'submissions/Data/` folder.
+The outputs will be in the same `submissions/Data/` folder.
 
 - 📁 FS_DMEMResult.txt
 - 📁  FS_RFResult.txt
