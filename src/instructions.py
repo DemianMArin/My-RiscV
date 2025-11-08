@@ -1,0 +1,770 @@
+import abc
+import importlib
+import os
+from abc import ABC
+
+from riscvmodel.code import decode
+from riscvmodel.isa import Instruction
+
+from models import DataMem, RegisterFile, State, EXState, WBState, MEMState
+
+
+# TODO:
+#   1. NOP Carry forwarding
+#   2. Halt logic
+#   3. Hazard Handling
+#   4. Handle B and J type instructions
+
+class InstructionBase(metaclass=abc.ABCMeta):
+
+    def __init__(self, instruction: Instruction, memory: DataMem, registers: RegisterFile, state: State,
+                 nextState: State):
+        self.instruction = instruction
+        self.memory = memory
+        self.registers = registers
+        self.state = state
+        self.nextState = nextState
+        self.stages = self.memory.id
+
+    def decode_ss(self, *args, **kwargs):
+        pass
+
+    @abc.abstractmethod
+    def execute_ss(self, *args, **kwargs):
+        pass
+
+    def mem_ss(self, *args, **kwargs):
+        pass
+
+    def wb_ss(self, *args, **kwargs):
+        pass
+
+    @abc.abstractmethod
+    def decode_fs(self, *args, **kwargs):
+        pass
+
+    @abc.abstractmethod
+    def execute_fs(self, *args, **kwargs):
+        pass
+
+    def mem_fs(self, *args, **kwargs):
+        wb_state = WBState()
+        wb_state.set_attributes(
+            instruction_ob=self.state.MEM.instruction_ob,
+            nop=self.state.MEM.nop,
+            store_data=self.state.MEM.store_data,
+            write_register_addr=self.state.MEM.write_register_addr,
+            rs1=self.state.MEM.rs1,  # ADD: Propagate rs1 from MEM to WB
+            rs2=self.state.MEM.rs2,  # ADD: Propagate rs2 from MEM to WB
+            write_back_enable=self.state.MEM.write_back_enable,
+            halt=self.state.MEM.halt
+        )
+        self.nextState.WB = wb_state
+
+    def wb_fs(self, *args, **kwargs):
+        if self.state.WB.write_back_enable:
+            self.registers.write_rf(self.state.WB.write_register_addr, self.state.WB.store_data)
+
+    def decode(self, *args, **kwargs):
+        if self.stages == "SS":
+            return self.decode_ss(*args, **kwargs)
+        else:
+            self.state = kwargs["state"]
+            self.nextState = kwargs["nextState"]
+            self.memory = kwargs["memory"]
+            self.registers = kwargs["registers"]
+            return self.state, self.nextState, self.memory, self.registers, self.decode_fs(*args, **kwargs)
+
+    def execute(self, *args, **kwargs):
+        if self.stages == "SS":
+            return self.execute_ss(*args, **kwargs)
+        else:
+            self.state = kwargs["state"]
+            self.nextState = kwargs["nextState"]
+            self.memory = kwargs["memory"]
+            self.registers = kwargs["registers"]
+            response = self.execute_fs(*args, **kwargs)
+            return self.state, self.nextState, self.memory, self.registers, response
+
+    def mem(self, *args, **kwargs):
+        if self.stages == "SS":
+            return self.mem_ss(*args, **kwargs)
+        else:
+            self.state = kwargs["state"]
+            self.nextState = kwargs["nextState"]
+            self.memory = kwargs["memory"]
+            self.registers = kwargs["registers"]
+            response = self.mem_fs(*args, **kwargs)
+            return self.state, self.nextState, self.memory, self.registers, response
+
+    def wb(self, *args, **kwargs):
+        if self.stages == "SS":
+            return self.wb_ss(*args, **kwargs)
+        else:
+            self.state = kwargs["state"]
+            self.nextState = kwargs["nextState"]
+            self.memory = kwargs["memory"]
+            self.registers = kwargs["registers"]
+            response = self.wb_fs(*args, **kwargs)
+            return self.state, self.nextState, self.memory, self.registers, response
+
+
+class InstructionRBase(InstructionBase, ABC):
+    def __init__(self, instruction: Instruction, memory: DataMem, registers: RegisterFile, state: State,
+                 nextState: State):
+        super(InstructionRBase, self).__init__(instruction, memory, registers, state, nextState)
+        self.rs1 = instruction.rs1
+        self.rs2 = instruction.rs2
+        self.rd = instruction.rd
+
+    def wb_ss(self, *args, **kwargs):
+        data = kwargs['alu_result']
+        return self.registers.write_rf(self.rd, data)
+
+    def decode_fs(self, *args, **kwargs):
+        ex_state = EXState()
+
+        # TODO: Handle Hazards
+        #   set nop for EX state
+        #   will be applicable in R, I, S, B, J type instructions
+
+        ex_state.set_attributes(
+            instruction_ob=self,
+            nop=self.state.ID.nop,
+            instr_binary=self.state.ID.instruction_bytes,  # ADD: Binary instruction string
+            operand1=self.registers.read_rf(self.rs1),
+            operand2=self.registers.read_rf(self.rs2),
+            destination_register=self.rd,
+            rs1=self.rs1,  # ADD: Set source register 1 address
+            rs2=self.rs2,  # ADD: Set source register 2 address
+            imm=0,  # ADD: R-type instructions don't have immediates
+            is_i_type=0,  # ADD: R-type instructions have is_I_type = 0
+            write_back_enable=True
+        )
+
+        # Stall - insert NOP bubble
+        if self.state.EX.destination_register in [self.rs1,
+                                                  self.rs2] and self.state.EX.read_data_mem and self.rs1 != 0 and self.rs2 != 0:
+            # Create a clean NOP state
+            ex_state = EXState()
+            ex_state.set_attributes(
+                nop=True,
+                instr_binary=self.state.ID.instruction_bytes,  # Keep instruction for debugging
+                operand1=0,
+                operand2=0,
+                destination_register=0,
+                rs1=0,
+                rs2=0,
+                imm=0,
+                is_i_type=0,
+                read_data_mem=False,
+                write_data_mem=False,
+                write_back_enable=False
+            )
+            self.state.IF.PC -= 4
+            self.nextState.EX = ex_state
+            self.nextState.IF.instruction_count = self.nextState.IF.instruction_count - 1
+            return
+
+        # Forwarding
+        # MEM-to-ID forwarding for LOAD instructions
+        if self.state.MEM.read_data_mem and self.state.MEM.write_back_enable and not self.state.MEM.write_data_mem and self.state.MEM.write_register_addr == self.rs1 and self.rs1 != 0:
+            ex_state.operand1 = self.nextState.WB.store_data
+
+        if self.state.MEM.read_data_mem and self.state.MEM.write_back_enable and not self.state.MEM.write_data_mem and self.state.MEM.write_register_addr == self.rs2 and self.rs2 != 0:
+            ex_state.operand2 = self.nextState.WB.store_data
+
+        # MEM-to-ID forwarding for ALU instructions
+        if not self.state.MEM.read_data_mem and self.state.MEM.write_back_enable and not self.state.MEM.write_data_mem and self.state.MEM.write_register_addr == self.rs1 and self.rs1 != 0:
+            ex_state.operand1 = self.nextState.WB.store_data
+
+        if not self.state.MEM.read_data_mem and self.state.MEM.write_back_enable and not self.state.MEM.write_data_mem and self.state.MEM.write_register_addr == self.rs2 and self.rs2 != 0:
+            ex_state.operand2 = self.nextState.WB.store_data
+
+        # EX-to-ID forwarding for ALU instructions
+        if not self.state.EX.read_data_mem and self.state.EX.write_back_enable and not self.state.EX.write_data_mem and self.state.EX.destination_register == self.rs1 and self.rs1 != 0:
+            ex_state.operand1 = self.nextState.MEM.store_data
+
+        if not self.state.EX.read_data_mem and self.state.EX.write_back_enable and not self.state.EX.write_data_mem and self.state.EX.destination_register == self.rs2 and self.rs2 != 0:
+            ex_state.operand2 = self.nextState.MEM.store_data
+
+        self.nextState.EX = ex_state
+
+    def execute_fs(self, *args, **kwargs):
+        mem_state = MEMState()
+        mem_state.set_attributes(
+            instruction_ob=self,
+            nop=self.state.EX.nop,
+            write_register_addr=self.state.EX.destination_register,
+            rs1=self.state.EX.rs1,  # ADD: Propagate rs1 from EX to MEM
+            rs2=self.state.EX.rs2,  # ADD: Propagate rs2 from EX to MEM
+            write_back_enable=True,
+            halt=self.state.EX.halt
+        )
+        self.nextState.MEM = mem_state
+
+
+class InstructionIBase(InstructionBase, ABC):
+    def __init__(self, instruction: Instruction, memory: DataMem, registers: RegisterFile, state: State,
+                 nextState: State):
+        super(InstructionIBase, self).__init__(instruction, memory, registers, state, nextState)
+        self.rs1 = instruction.rs1
+        self.rd = instruction.rd
+        self.imm = instruction.imm.value
+
+    def wb_ss(self, *args, **kwargs):
+        data = kwargs['alu_result']
+        return self.registers.write_rf(self.rd, data)
+
+    def decode_fs(self, *args, **kwargs):
+        ex_state = EXState()
+        ex_state.set_attributes(
+            instruction_ob=self,
+            nop=self.state.ID.nop,
+            instr_binary=self.state.ID.instruction_bytes,  # ADD: Binary instruction string
+            operand1=self.registers.read_rf(self.rs1),
+            operand2=0,  # I-type has no rs2, so Read_data2 should be 0
+            destination_register=self.rd,
+            rs1=self.rs1,  # ADD: Set source register 1 address
+            rs2=0,  # ADD: I-type instructions don't use rs2, set to 0
+            imm=self.imm,  # ADD: I-type instructions have immediates
+            is_i_type=1,  # ADD: I-type instructions have is_I_type = 1
+            write_back_enable=True,
+            halt=self.state.ID.halt
+        )
+
+        # Stall - insert NOP bubble
+        if self.state.EX.destination_register == self.rs1 and self.state.EX.read_data_mem and self.rs1 != 0:
+            # Create a clean NOP state
+            ex_state = EXState()
+            ex_state.set_attributes(
+                nop=True,
+                instr_binary=self.state.ID.instruction_bytes,  # Keep instruction for debugging
+                operand1=0,
+                operand2=0,
+                destination_register=0,
+                rs1=0,
+                rs2=0,
+                imm=0,
+                is_i_type=0,
+                read_data_mem=False,
+                write_data_mem=False,
+                write_back_enable=False
+            )
+            self.state.IF.PC -= 4
+            self.nextState.EX = ex_state
+            self.nextState.IF.instruction_count = self.nextState.IF.instruction_count - 1
+            return
+
+        # Forwarding
+        # MEM-to-ID forwarding for LOAD instructions
+        if self.state.MEM.read_data_mem and self.state.MEM.write_back_enable and not self.state.MEM.write_data_mem and self.state.MEM.write_register_addr == self.rs1 and self.rs1 != 0:
+            ex_state.operand1 = self.nextState.WB.store_data
+
+        # MEM-to-ID forwarding for ALU instructions
+        if not self.state.MEM.read_data_mem and self.state.MEM.write_back_enable and not self.state.MEM.write_data_mem and self.state.MEM.write_register_addr == self.rs1 and self.rs1 != 0:
+            ex_state.operand1 = self.nextState.WB.store_data
+
+        # EX-to-ID forwarding for ALU instructions
+        if not self.state.EX.read_data_mem and self.state.EX.write_back_enable and not self.state.EX.write_data_mem and self.state.EX.destination_register == self.rs1 and self.rs1 != 0:
+            ex_state.operand1 = self.nextState.MEM.store_data
+
+        self.nextState.EX = ex_state
+
+    def execute_fs(self, *args, **kwargs):
+        mem_state = MEMState()
+        mem_state.set_attributes(
+            instruction_ob=self,
+            nop=self.state.EX.nop,
+            write_register_addr=self.state.EX.destination_register,
+            rs1=self.state.EX.rs1,  # ADD: Propagate rs1 from EX to MEM
+            rs2=self.state.EX.rs2,  # ADD: Propagate rs2 from EX to MEM
+            write_back_enable=True,
+            halt=self.state.EX.halt
+        )
+        self.nextState.MEM = mem_state
+
+
+class InstructionSBase(InstructionBase, ABC):
+    def __init__(self, instruction: Instruction, memory: DataMem, registers: RegisterFile, state: State,
+                 nextState: State):
+        super(InstructionSBase, self).__init__(instruction, memory, registers, state, nextState)
+        self.rs1 = instruction.rs1
+        self.rs2 = instruction.rs2
+        self.imm = instruction.imm.value
+
+    def mem_ss(self, *args, **kwargs):
+        address = kwargs['alu_result']
+        data = self.registers.read_rf(self.rs2)
+        self.memory.write_data_mem(address, data)
+
+    def decode_fs(self, *args, **kwargs):
+        ex_state = EXState()
+        ex_state.set_attributes(
+            instruction_ob=self,
+            nop=self.state.ID.nop,
+            instr_binary=self.state.ID.instruction_bytes,  # ADD: Binary instruction string
+            operand1=self.registers.read_rf(self.rs1),
+            operand2=self.registers.read_rf(self.rs2),  # FIXED: Should be rs2 value, not immediate
+            store_data=self.registers.read_rf(self.rs2),
+            destination_register=self.rs2,
+            rs1=self.rs1,  # ADD: Set source register 1 address
+            rs2=self.rs2,  # ADD: Set source register 2 address
+            imm=self.imm,  # ADD: S-type instructions have immediates
+            is_i_type=1,  # ADD: S-type instructions have is_I_type = 1
+            write_data_mem=True,
+            halt=self.state.ID.halt
+        )
+        # Stall - insert NOP bubble
+        if self.state.EX.destination_register in [self.rs1,
+                                                  self.rs2] and self.state.EX.read_data_mem and self.rs1 != 0 and self.rs2 != 0:
+            # Create a clean NOP state
+            ex_state = EXState()
+            ex_state.set_attributes(
+                nop=True,
+                instr_binary=self.state.ID.instruction_bytes,  # Keep instruction for debugging
+                operand1=0,
+                operand2=0,
+                destination_register=0,
+                rs1=0,
+                rs2=0,
+                imm=0,
+                is_i_type=0,
+                read_data_mem=False,
+                write_data_mem=False,
+                write_back_enable=False
+            )
+            self.state.IF.PC -= 4
+            self.nextState.EX = ex_state
+            self.nextState.IF.instruction_count = self.nextState.IF.instruction_count - 1
+            return
+
+        # Forwarding
+        # EX-to-ID forwarding for ALU instructions
+        if not self.state.EX.read_data_mem and self.state.EX.write_back_enable and not self.state.EX.write_data_mem and self.state.EX.destination_register == self.rs1 and self.rs1 != 0:
+            ex_state.operand1 = self.nextState.MEM.store_data
+
+        if not self.state.EX.read_data_mem and self.state.EX.write_back_enable and not self.state.EX.write_data_mem and self.state.EX.destination_register == self.rs2 and self.rs2 != 0:
+            ex_state.store_data = self.nextState.MEM.store_data
+            ex_state.operand2 = self.nextState.MEM.store_data
+
+        # MEM-to-ID forwarding for LOAD instructions
+        if self.state.MEM.read_data_mem and self.state.MEM.write_back_enable and not self.state.MEM.write_data_mem and self.state.MEM.write_register_addr == self.rs1 and self.rs1 != 0:
+            ex_state.operand1 = self.nextState.WB.store_data
+
+        if self.state.MEM.read_data_mem and self.state.MEM.write_back_enable and not self.state.MEM.write_data_mem and self.state.MEM.write_register_addr == self.rs2 and self.rs2 != 0:
+            ex_state.store_data = self.nextState.WB.store_data
+            ex_state.operand2 = self.nextState.WB.store_data
+
+        # MEM-to-ID forwarding for ALU instructions
+        if not self.state.MEM.read_data_mem and self.state.MEM.write_back_enable and not self.state.MEM.write_data_mem and self.state.MEM.write_register_addr == self.rs1 and self.rs1 != 0:
+            ex_state.operand1 = self.nextState.WB.store_data
+
+        if not self.state.MEM.read_data_mem and self.state.MEM.write_back_enable and not self.state.MEM.write_data_mem and self.state.MEM.write_register_addr == self.rs2 and self.rs2 != 0:
+            ex_state.store_data = self.nextState.WB.store_data
+            ex_state.operand2 = self.nextState.WB.store_data
+
+        self.nextState.EX = ex_state
+
+    def execute_fs(self, *args, **kwargs):
+        mem_state = MEMState()
+        address = self.state.EX.operand1 + self.state.EX.imm  # FIXED: Use imm instead of operand2
+        mem_state.set_attributes(
+            instruction_ob=self,
+            nop=self.state.EX.nop,
+            data_address=address,
+            alu_result=address,  # ADD: ALU result is the address calculation
+            store_data=self.state.EX.store_data,
+            rs1=self.state.EX.rs1,  # ADD: Propagate rs1 from EX to MEM
+            rs2=self.state.EX.rs2,  # ADD: Propagate rs2 from EX to MEM
+            write_data_mem=True,
+            halt=self.state.ID.halt
+        )
+        self.nextState.MEM = mem_state
+
+    def mem_fs(self, *args, **kwargs):
+        if self.state.MEM.write_data_mem:
+            self.memory.write_data_mem(self.state.MEM.data_address, self.state.MEM.store_data)
+        wb_state = WBState()
+        wb_state.set_attributes(
+            instruction_ob=self,
+            rs1=self.state.MEM.rs1,  # ADD: Propagate rs1 from MEM to WB
+            rs2=self.state.MEM.rs2   # ADD: Propagate rs2 from MEM to WB
+        )
+        self.nextState.WB = wb_state
+
+
+class InstructionBBase(InstructionBase, ABC):
+    def __init__(self, instruction: Instruction, memory: DataMem, registers: RegisterFile, state: State,
+                 nextState: State):
+        super(InstructionBBase, self).__init__(instruction, memory, registers, state, nextState)
+        self.rs1 = instruction.rs1
+        self.rs2 = instruction.rs2
+        self.imm = instruction.imm.value
+
+    @abc.abstractmethod
+    def take_branch(self, operand1, operand2):
+        pass
+
+    def execute_ss(self, *args, **kwargs):
+        pass
+
+    def execute_fs(self, *args, **kwargs):
+        mem_state = MEMState()
+        mem_state.instruction_ob = self
+        mem_state.rs1 = self.state.EX.rs1  # ADD: Propagate rs1 from EX to MEM
+        mem_state.rs2 = self.state.EX.rs2  # ADD: Propagate rs2 from EX to MEM
+        mem_state.alu_result = 0  # ADD: Branches don't have ALU result
+        mem_state.nop = True
+        self.nextState.MEM = mem_state
+
+    def decode_fs(self, *args, **kwargs):
+
+        operand1 = self.registers.read_rf(self.rs1)
+        operand2 = self.registers.read_rf(self.rs2)
+
+        if self.state.EX.write_back_enable and self.state.EX.destination_register != 0 and self.state.EX.destination_register == self.rs1 and self.rs1 != 0:
+            operand1 = self.nextState.MEM.store_data
+
+        if self.state.EX.write_back_enable and self.state.EX.destination_register != 0 and self.state.EX.destination_register == self.rs2 and self.rs2 != 0:
+            operand2 = self.nextState.MEM.store_data
+
+        if self.state.MEM.write_back_enable and self.state.MEM.write_register_addr != 0 and not (
+                self.state.EX.write_back_enable and self.state.EX.destination_register != 0 and self.state.EX.destination_register == self.rs1) and self.state.MEM.write_register_addr == self.rs1 and self.rs1 != 0:
+            operand1 = self.nextState.WB.store_data
+
+        if self.state.MEM.write_back_enable and self.state.MEM.write_register_addr != 0 and not (
+                self.state.EX.write_back_enable and self.state.EX.destination_register != 0 and self.state.EX.destination_register == self.rs2) and self.state.MEM.write_register_addr == self.rs2 and self.rs2 != 0:
+            operand2 = self.nextState.WB.store_data
+
+        ex_state = EXState()
+        ex_state.instruction_ob = self
+        ex_state.instr_binary = self.state.ID.instruction_bytes  # ADD: Binary instruction string
+        ex_state.rs1 = self.rs1  # ADD: Set source register 1 address
+        ex_state.rs2 = self.rs2  # ADD: Set source register 2 address
+        ex_state.imm = self.imm  # ADD: B-type instructions have immediates
+        ex_state.is_i_type = 1  # ADD: B-type instructions have is_I_type = 1
+
+        if self.take_branch(operand1, operand2):
+            self.nextState.IF.PC = self.state.IF.PC + self.imm - 4
+            self.nextState.ID.nop = True
+            self.state.IF.nop = True
+        ex_state.nop = True
+
+        self.nextState.EX = ex_state
+
+
+class InstructionJBase(InstructionBase, ABC):
+    def __init__(self, instruction: Instruction, memory: DataMem, registers: RegisterFile, state: State,
+                 nextState: State):
+        super(InstructionJBase, self).__init__(instruction, memory, registers, state, nextState)
+        self.rd = instruction.rd
+        self.imm = instruction.imm.value
+
+    def execute_ss(self, *args, **kwargs):
+        pass
+
+    def decode_fs(self, *args, **kwargs):
+        ex_state = EXState()
+        ex_state.set_attributes(
+            instruction_ob=self,
+            instr_binary=self.state.ID.instruction_bytes,  # ADD: Binary instruction string
+            store_data=self.state.IF.PC,
+            destination_register=self.rd,
+            rs1=0,  # ADD: JAL doesn't use source registers
+            rs2=0,  # ADD: JAL doesn't use source registers
+            imm=self.imm,  # ADD: J-type instructions have immediates
+            is_i_type=1,  # ADD: J-type instructions have is_I_type = 1
+            write_back_enable=True
+        )
+
+        self.nextState.IF.PC = self.state.IF.PC + self.imm - 4
+        self.nextState.ID.nop = True
+        self.state.IF.nop = True
+
+        self.nextState.EX = ex_state
+
+    def execute_fs(self, *args, **kwargs):
+        mem_state = MEMState()
+        mem_state.set_attributes(
+            instruction_ob=self,
+            store_data=self.state.EX.store_data,
+            alu_result=self.state.EX.store_data,  # ADD: ALU result is PC+4
+            write_register_addr=self.rd,
+            rs1=self.state.EX.rs1,  # ADD: Propagate rs1 from EX to MEM
+            rs2=self.state.EX.rs2,  # ADD: Propagate rs2 from EX to MEM
+            write_back_enable=True
+        )
+        self.nextState.MEM = mem_state
+
+
+class ADD(InstructionRBase):
+    def __init__(self, instruction: Instruction, memory: DataMem, registers: RegisterFile, state: State,
+                 nextState: State):
+        super(ADD, self).__init__(instruction, memory, registers, state, nextState)
+
+    def execute_ss(self, *args, **kwargs):
+        return self.registers.read_rf(self.rs1) + self.registers.read_rf(self.rs2)
+
+    def execute_fs(self, *args, **kwargs):
+        super(ADD, self).execute_fs()
+        result = self.state.EX.operand1 + self.state.EX.operand2
+        self.nextState.MEM.store_data = result
+        self.nextState.MEM.alu_result = result
+
+
+class SUB(InstructionRBase):
+
+    def __init__(self, instruction: Instruction, memory: DataMem, registers: RegisterFile, state: State,
+                 nextState: State):
+        super(SUB, self).__init__(instruction, memory, registers, state, nextState)
+
+    def execute_ss(self, *args, **kwargs):
+        return self.registers.read_rf(self.rs1) - self.registers.read_rf(self.rs2)
+
+    def execute_fs(self, *args, **kwargs):
+        super(SUB, self).execute_fs()
+        result = self.state.EX.operand1 - self.state.EX.operand2
+        self.nextState.MEM.store_data = result
+        self.nextState.MEM.alu_result = result
+
+
+class XOR(InstructionRBase):
+
+    def __init__(self, instruction: Instruction, memory: DataMem, registers: RegisterFile, state: State,
+                 nextState: State):
+        super(XOR, self).__init__(instruction, memory, registers, state, nextState)
+
+    def execute_ss(self, *args, **kwargs):
+        return self.registers.read_rf(self.rs1) ^ self.registers.read_rf(self.rs2)
+
+    def execute_fs(self, *args, **kwargs):
+        super(XOR, self).execute_fs()
+        result = self.state.EX.operand1 ^ self.state.EX.operand2
+        self.nextState.MEM.store_data = result
+        self.nextState.MEM.alu_result = result
+
+
+class OR(InstructionRBase):
+
+    def __init__(self, instruction: Instruction, memory: DataMem, registers: RegisterFile, state: State,
+                 nextState: State):
+        super(OR, self).__init__(instruction, memory, registers, state, nextState)
+
+    def execute_ss(self, *args, **kwargs):
+        return self.registers.read_rf(self.rs1) | self.registers.read_rf(self.rs2)
+
+    def execute_fs(self, *args, **kwargs):
+        super(OR, self).execute_fs()
+        result = self.state.EX.operand1 | self.state.EX.operand2
+        self.nextState.MEM.store_data = result
+        self.nextState.MEM.alu_result = result
+
+
+class AND(InstructionRBase):
+    def __init__(self, instruction: Instruction, memory: DataMem, registers: RegisterFile, state: State,
+                 nextState: State):
+        super(AND, self).__init__(instruction, memory, registers, state, nextState)
+
+    def execute_ss(self, *args, **kwargs):
+        return self.registers.read_rf(self.rs1) & self.registers.read_rf(self.rs2)
+
+    def execute_fs(self, *args, **kwargs):
+        super(AND, self).execute_fs()
+        result = self.state.EX.operand1 & self.state.EX.operand2
+        self.nextState.MEM.store_data = result
+        self.nextState.MEM.alu_result = result
+
+
+class ADDI(InstructionIBase):
+    def __init__(self, instruction: Instruction, memory: DataMem, registers: RegisterFile, state: State,
+                 nextState: State):
+        super(ADDI, self).__init__(instruction, memory, registers, state, nextState)
+
+    def execute_ss(self, *args, **kwargs):
+        return self.registers.read_rf(self.rs1) + self.imm
+
+    def execute_fs(self, *args, **kwargs):
+        super(ADDI, self).execute_fs()
+        result = self.state.EX.operand1 + self.state.EX.imm  # Use imm field for I-type
+        self.nextState.MEM.store_data = result
+        self.nextState.MEM.alu_result = result
+
+
+class XORI(InstructionIBase):
+    def __init__(self, instruction: Instruction, memory: DataMem, registers: RegisterFile, state: State,
+                 nextState: State):
+        super(XORI, self).__init__(instruction, memory, registers, state, nextState)
+
+    def execute_ss(self, *args, **kwargs):
+        return self.registers.read_rf(self.rs1) ^ self.imm
+
+    def execute_fs(self, *args, **kwargs):
+        super(XORI, self).execute_fs()
+        result = self.state.EX.operand1 ^ self.state.EX.imm  # Use imm field for I-type
+        self.nextState.MEM.store_data = result
+        self.nextState.MEM.alu_result = result
+
+
+class ORI(InstructionIBase):
+
+    def __init__(self, instruction: Instruction, memory: DataMem, registers: RegisterFile, state: State,
+                 nextState: State):
+        super(ORI, self).__init__(instruction, memory, registers, state, nextState)
+
+    def execute_ss(self, *args, **kwargs):
+        return self.registers.read_rf(self.rs1) | self.imm
+
+    def execute_fs(self, *args, **kwargs):
+        super(ORI, self).execute_fs()
+        result = self.state.EX.operand1 | self.state.EX.imm  # Use imm field for I-type
+        self.nextState.MEM.store_data = result
+        self.nextState.MEM.alu_result = result
+
+
+class ANDI(InstructionIBase):
+    def __init__(self, instruction: Instruction, memory: DataMem, registers: RegisterFile, state: State,
+                 nextState: State):
+        super(ANDI, self).__init__(instruction, memory, registers, state, nextState)
+
+    def execute_ss(self, *args, **kwargs):
+        return self.registers.read_rf(self.rs1) & self.imm
+
+    def execute_fs(self, *args, **kwargs):
+        super(ANDI, self).execute_fs()
+        result = self.state.EX.operand1 & self.state.EX.imm  # Use imm field for I-type
+        self.nextState.MEM.store_data = result
+        self.nextState.MEM.alu_result = result
+
+
+class LW(InstructionIBase):
+    def __init__(self, instruction: Instruction, memory: DataMem, registers: RegisterFile, state: State,
+                 nextState: State):
+        super(LW, self).__init__(instruction, memory, registers, state, nextState)
+
+    def execute_ss(self, *args, **kwargs):
+        return self.registers.read_rf(self.rs1) + self.imm
+
+    def mem_ss(self, *args, **kwargs):
+        address = kwargs['alu_result']
+        return self.memory.read_data(address)
+
+    def wb_ss(self, *args, **kwargs):
+        data = kwargs['mem_result']
+        return self.registers.write_rf(self.rd, data)
+
+    def decode_fs(self, *args, **kwargs):
+        super(LW, self).decode_fs()
+        self.nextState.EX.read_data_mem = True
+
+    def execute_fs(self, *args, **kwargs):
+        super(LW, self).execute_fs()
+        address = self.state.EX.operand1 + self.state.EX.imm  # Use imm field for I-type
+        self.nextState.MEM.set_attributes(
+            data_address=address,
+            alu_result=address,  # ADD: ALU result is the address calculation
+            read_data_mem=True
+        )
+
+    def mem_fs(self, *args, **kwargs):
+        super(LW, self).mem_fs(*args, **kwargs)
+        if self.state.MEM.read_data_mem:
+            self.nextState.WB.store_data = self.memory.read_data(
+                self.state.MEM.data_address
+            )
+
+
+class SW(InstructionSBase):
+    def __init__(self, instruction: Instruction, memory: DataMem, registers: RegisterFile, state: State,
+                 nextState: State):
+        super(SW, self).__init__(instruction, memory, registers, state, nextState)
+
+    def execute_ss(self, *args, **kwargs):
+        return self.registers.read_rf(self.rs1) + self.imm
+
+
+class BEQ(InstructionBBase):
+
+    def __init__(self, instruction: Instruction, memory: DataMem, registers: RegisterFile, state: State,
+                 nextState: State):
+        super(BEQ, self).__init__(instruction, memory, registers, state, nextState)
+
+    def take_branch(self, operand1, operand2):
+        return operand1 == operand2
+
+
+class BNE(InstructionBBase):
+
+    def __init__(self, instruction: Instruction, memory: DataMem, registers: RegisterFile, state: State,
+                 nextState: State):
+        super(BNE, self).__init__(instruction, memory, registers, state, nextState)
+
+    def take_branch(self, operand1, operand2):
+        return operand1 != operand2
+
+
+class JAL(InstructionJBase):
+
+    def __init__(self, instruction: Instruction, memory: DataMem, registers: RegisterFile, state: State,
+                 nextState: State):
+        super(JAL, self).__init__(instruction, memory, registers, state, nextState)
+
+
+class ADDERBTYPE:
+    def __init__(self, instruction: Instruction, state: State(), registers: RegisterFile):
+        self.instruction = instruction
+        self.state = state
+        self.registers = registers
+        self.rs1 = instruction.rs1
+        self.rs2 = instruction.rs2
+        self.imm = instruction.imm.value
+
+    def get_pc(self, *args, **kwargs):
+        if self.instruction.mnemonic == 'beq':
+            if self.registers.read_rf(self.rs1) == self.registers.read_rf(self.rs2):
+                return self.state.IF.PC + self.imm
+            else:
+                return self.state.IF.PC + 4
+        else:
+            if self.registers.read_rf(self.rs1) != self.registers.read_rf(self.rs2):
+                return self.state.IF.PC + self.imm
+            else:
+                return self.state.IF.PC + 4
+
+
+class ADDERJTYPE:
+    def __init__(self, instruction: Instruction, state: State(), registers: RegisterFile):
+        self.instruction = instruction
+        self.state = state
+        self.registers = registers
+        self.rd = instruction.rd
+        self.imm = instruction.imm.value
+
+    def get_pc(self, *args, **kwargs):
+        self.registers.write_rf(self.rd, self.state.IF.PC + 4)
+        return self.state.IF.PC + self.imm
+
+
+def get_instruction_class(mnemonic: str):
+    try:
+        if mnemonic == "lb":
+            mnemonic = "lw"
+        cls = getattr(importlib.import_module('instructions'), mnemonic.upper())
+        return cls
+    except AttributeError as e:
+        raise Exception("Invalid Instruction")
+
+
+def main():
+    instruction: Instruction = decode(int("01000100010000100110101110010011", 2))
+    ioDir = os.path.abspath("./data")
+    dmem_ss = DataMem("SS", ioDir)
+    registers = RegisterFile(ioDir)
+
+    cls = get_instruction_class("ori")
+    instruction_ob = cls(instruction, dmem_ss, registers)
+    result = instruction_ob.execute("arg1", "arg2", kwarg1="val_kwarg1", kwarg2="val_kwarg2")
+
+
+if __name__ == "__main__":
+    main()
