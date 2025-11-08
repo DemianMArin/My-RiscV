@@ -1,8 +1,0 @@
-Single Stage Core Performance Metrics-----------------------------
-Number of cycles taken: 7
-Cycles per instruction: 1.1666666666666667
-Instructions per cycle: 0.8571428571428571
-Five Stage Core Performance Metrics-----------------------------
-Number of cycles taken: 11
-Cycles per instruction: 1.8333333333333333
-Instructions per cycle: 0.5454545454545455

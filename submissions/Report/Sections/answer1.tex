@@ -1,0 +1,64 @@
+% Single Stage Processor Diagram
+%
+% This diagram shows the basic components of a single-stage RISC-V processor.
+%
+% Components:
+% - PC (Program Counter): Holds the address of the instruction being fetched.
+%   - Input: Next instruction address.
+%   - Output: Current instruction address.
+% - Instruction Memory: Stores the program instructions.
+%   - Input: Instruction address from PC.
+%   - Output: The instruction itself.
+% - Register File: Holds the processor's general-purpose registers.
+%   - Input: Register numbers to read, data to write, write enable signal.
+%   - Output: Data from specified registers.
+% - ALU (Arithmetic Logic Unit): Performs calculations.
+%   - Input: Operands from the register file or immediate values.
+%   - Output: The result of the operation.
+% - Data Memory: Stores the program's data.
+%   - Input: Address from ALU, data to write.
+%   - Output: Data read from memory.
+% - MUX (Multiplexer): Selects one of several inputs.
+%   - PC MUX: Selects the next PC value (either PC+4 or a branch target).
+%   - WB MUX: Selects the data to be written back to the register file (either ALU result or memory data).
+% - +4: An adder to calculate the address of the next instruction in sequence.
+
+\begin{figure}[H]
+    \centering
+    \resizebox{\textwidth}{!}{
+    \begin{tikzpicture}[node distance=2.5cm, auto, >=stealth']
+        % Nodes
+        \node (pc) [draw, rectangle] {PC};
+        \node (instr_mem) [draw, rectangle, right=of pc] {Instruction Memory};
+        \node (reg_file) [draw, rectangle, right=of instr_mem] {Register File};
+        \node (alu) [draw, rectangle, right=of reg_file] {ALU};
+        \node (data_mem) [draw, rectangle, right=of alu] {Data Memory};
+        \node (wb_mux) [draw, rectangle, right=of data_mem] {MUX};
+        \node (add4) [draw, circle, below=of pc] {+4};
+        \node (mux_pc) [draw, rectangle, left=of pc] {MUX};
+
+        % Main data path
+        \draw[->] (pc.east) -- (instr_mem.west);
+        \draw[->] (instr_mem.east) -- (reg_file.west);
+        \draw[->] (reg_file.east) -- (alu.west);
+        \draw[->] (alu.east) -- (data_mem.west);
+        \draw[->] (data_mem.east) -- (wb_mux.west);
+
+        % Write-back path from ALU
+        \draw[->] (alu.south) |- ++(0,-1.5) -| (wb_mux.south);
+
+        % Write-back to register file
+        \draw[->] (wb_mux.north) |- ++(0,1) -| (reg_file.east);
+
+        % PC update logic
+        \draw[->] (pc.south) -- (add4.north);
+        \draw[->] (add4.west) -| (mux_pc.south);
+        \draw[->] (mux_pc.east) -- (pc.west);
+        
+        % Branch logic from ALU to PC MUX
+        \draw[->] (alu.south) |- ++(0,-2) -| (mux_pc);
+    \end{tikzpicture}
+    }
+    \caption{Single Stage Processor}
+    \label{fig:single_stage}
+\end{figure}

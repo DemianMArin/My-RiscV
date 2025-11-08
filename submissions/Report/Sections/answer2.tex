@@ -1,0 +1,67 @@
+% Five-Stage Pipelined Processor Diagram
+%
+% This diagram shows a five-stage pipelined RISC-V processor.
+% Pipelining increases throughput by overlapping the execution of multiple instructions.
+%
+% Stages:
+% - IF (Instruction Fetch): Fetches the instruction from memory.
+% - ID (Instruction Decode): Decodes the instruction and reads from the register file.
+% - EX (Execute): Performs the ALU operation.
+% - MEM (Memory Access): Reads from or writes to data memory.
+% - WB (Write-Back): Writes the result back to the register file.
+%
+% Pipeline Registers (IF/ID, ID/EX, EX/MEM, MEM/WB):
+% - These registers are placed between stages to hold the intermediate results and control signals for the instruction being processed in that stage.
+%
+% Hazard Unit:
+% - Detects data and control hazards. It can stall the pipeline or control the forwarding paths to resolve these hazards.
+%
+% Forwarding Paths:
+% - These paths (dashed lines) allow the result of an instruction in a later stage (EX or MEM) to be used as an operand for an instruction in an earlier stage (ID/EX), avoiding unnecessary stalls.
+
+\begin{figure}[H]
+    \centering
+    \resizebox{\textwidth}{!}{
+    \begin{tikzpicture}[
+        node distance=1cm,
+        auto,
+        >=stealth',
+        block/.style={draw, rectangle, minimum width=2cm, minimum height=1cm},
+        pipeline/.style={draw, rectangle, minimum height=2.5cm}
+    ]
+        % Nodes
+        \node (if) [block] {IF};
+        \node (if_id) [pipeline, right=0.5cm of if] {IF/ID};
+        \node (id) [block, right=0.5cm of if_id] {ID};
+        \node (id_ex) [pipeline, right=0.5cm of id] {ID/EX};
+        \node (ex) [block, right=0.5cm of id_ex] {EX};
+        \node (ex_mem) [pipeline, right=0.5cm of ex] {EX/MEM};
+        \node (mem) [block, right=0.5cm of ex_mem] {MEM};
+        \node (mem_wb) [pipeline, right=0.5cm of mem] {MEM/WB};
+        \node (wb) [block, right=0.5cm of mem_wb] {WB};
+
+        % Connections
+        \draw[->] (if) -- (if_id);
+        \draw[->] (if_id) -- (id);
+        \draw[->] (id) -- (id_ex);
+        \draw[->] (id_ex) -- (ex);
+        \draw[->] (ex) -- (ex_mem);
+        \draw[->] (ex_mem) -- (mem);
+        \draw[->] (mem) -- (mem_wb);
+        \draw[->] (mem_wb) -- (wb);
+
+        % Hazard Unit
+        \node (hazard) [draw, rectangle, below=2cm of id] {Hazard Unit};
+        \draw[->, dotted] (id.south) -- (hazard);
+        \draw[->, dotted] (hazard.west) -| (if_id.south);
+        \draw[->, dotted] (hazard.east) -| (id_ex.south);
+
+        % Forwarding paths
+        \draw[->, dashed] (ex_mem.south) -- ++(0,-0.75) -| (ex.south) node[midway, right, yshift=-0.2cm] {Forward};
+        \draw[->, dashed] (mem_wb.south) -- ++(0,-1.25) -| (ex.south) node[midway, right, yshift=-0.2cm] {Forward};
+
+    \end{tikzpicture}
+    }
+    \caption{Five Stage Pipelined Processor}
+    \label{fig:five_stage}
+\end{figure}

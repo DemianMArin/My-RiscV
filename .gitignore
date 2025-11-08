@@ -3,4 +3,7 @@ __pycache__/
 notes.md
 output.txt
 compare_outputs.py
+*.synctex.gz
+*.log
+submissions/Data/
 
