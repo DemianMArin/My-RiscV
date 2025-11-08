@@ -110,16 +110,17 @@ class FiveStageCore(Core):
         self.stages = "Five Stage"
 
     def print_current_instruction(self, cycle, stage, instruction):
-        if issubclass(type(instruction), Instruction):
-            print(f"{cycle}\t{stage}\t{instruction}")
-        else:
-            if all([x in ["0", "1"] for x in instruction]):
-                try:
-                    print(f"{cycle}\t{stage}\t{decode(int(instruction, 2))}")
-                except MachineDecodeError as e:
-                    print(f"{cycle}\t{stage}\tHalt")
-            else:
-                print(f"{cycle}\t{stage}\t{instruction}")
+        return
+        # if issubclass(type(instruction), Instruction):
+        #     print(f"{cycle}\t{stage}\t{instruction}")
+        # else:
+        #     if all([x in ["0", "1"] for x in instruction]):
+        #         try:
+        #             print(f"{cycle}\t{stage}\t{decode(int(instruction, 2))}")
+        #         except MachineDecodeError as e:
+        #             print(f"{cycle}\t{stage}\tHalt")
+        #     else:
+        #         print(f"{cycle}\t{stage}\t{instruction}")
 
     def step(self):
         # Your implementation
