@@ -146,10 +146,16 @@ class FiveStageCore(Core):
                 registers=self.myRF,
                 memory=self.ext_dmem)
         else:
-            # Create a clean NOP state for WB when MEM is nop
+            # MEM nop - retain WB values from previous cycle
             from models import WBState
             wb_state = WBState()
             wb_state.nop = True
+            # Retain values from current WB (previous cycle's values)
+            wb_state.store_data = self.state.WB.store_data
+            wb_state.write_register_addr = self.state.WB.write_register_addr
+            wb_state.rs1 = self.state.WB.rs1
+            wb_state.rs2 = self.state.WB.rs2
+            wb_state.write_back_enable = self.state.WB.write_back_enable
             self.nextState.WB = wb_state
             self.print_current_instruction(self.cycle, "MEM", "nop")
 
@@ -160,15 +166,28 @@ class FiveStageCore(Core):
             self.state, self.nextState, self.ext_dmem, self.myRF, _ = self.state.EX.instruction_ob.execute(
                 state=self.state, nextState=self.nextState, registers=self.myRF, memory=self.ext_dmem)
         else:
-            # Create a clean NOP state for MEM when EX is nop
+            # NOP in EX: retain MEM control signals from previous cycle
             from models import MEMState
             mem_state = MEMState()
             mem_state.nop = True
+            # Retain control signals from current MEM (previous cycle's values)
+            mem_state.write_register_addr = self.state.MEM.write_register_addr
+            mem_state.rs1 = self.state.MEM.rs1
+            mem_state.rs2 = self.state.MEM.rs2
+            mem_state.read_data_mem = self.state.MEM.read_data_mem
+            mem_state.write_data_mem = self.state.MEM.write_data_mem
+            mem_state.write_back_enable = self.state.MEM.write_back_enable
+            # Data fields retain previous values too
+            mem_state.alu_result = self.state.MEM.alu_result
+            mem_state.store_data = self.state.MEM.store_data
+            mem_state.data_address = self.state.MEM.data_address
             self.nextState.MEM = mem_state
             self.print_current_instruction(self.cycle, "EX", "nop")
 
         # --------------------- ID stage ----------------------
-        if not self.state.ID.nop:
+        # Always decode if there's a valid instruction, even if ID.nop is True
+        # This allows instructions to continue flowing through pipeline after HALT
+        if self.state.ID.instruction_bytes and self.state.ID.instruction_bytes != "":
             self.print_current_instruction(self.cycle, "ID", self.state.ID.instruction_bytes)
             try:
                 instruction = decode(int(self.state.ID.instruction_bytes, 2))
@@ -181,47 +200,55 @@ class FiveStageCore(Core):
                                                                                                 nextState=self.nextState,
                                                                                                 registers=self.myRF,
                                                                                                 memory=self.ext_dmem)
+                # If ID was marked as nop, propagate nop to EX
+                if self.state.ID.nop:
+                    self.nextState.EX.nop = True
             except MachineDecodeError as e:
                 if "{:08x}".format(e.word) == 'ffffffff':
                     self.nextState.ID.halt = True
                 else:
                     raise Exception("Invalid Instruction to Decode")
         else:
-            # Create a clean NOP state for EX when ID is nop
+            # No valid instruction - create EX NOP that retains previous cycle's values
             from models import EXState
             ex_state = EXState()
             ex_state.nop = True
-            ex_state.instr_binary = ""
-            ex_state.operand1 = 0
-            ex_state.operand2 = 0
-            ex_state.destination_register = 0
-            ex_state.rs1 = 0
-            ex_state.rs2 = 0
-            ex_state.imm = 0
-            ex_state.is_i_type = 0
-            ex_state.read_data_mem = False
-            ex_state.write_data_mem = False
-            ex_state.write_back_enable = False
+            ex_state.instr_binary = self.state.EX.instr_binary
+            ex_state.operand1 = self.state.EX.operand1
+            ex_state.operand2 = self.state.EX.operand2
+            ex_state.destination_register = self.state.EX.destination_register
+            ex_state.rs1 = self.state.EX.rs1
+            ex_state.rs2 = self.state.EX.rs2
+            ex_state.imm = self.state.EX.imm
+            ex_state.is_i_type = self.state.EX.is_i_type
+            ex_state.read_data_mem = self.state.EX.read_data_mem
+            ex_state.write_data_mem = self.state.EX.write_data_mem
+            ex_state.write_back_enable = self.state.EX.write_back_enable
             self.nextState.EX = ex_state
             self.print_current_instruction(self.cycle, "ID", "nop")
 
         # --------------------- IF stage ----------------------
         if not self.state.IF.nop:
-            self.nextState.ID.instruction_bytes = self.ext_imem.read_instr(self.state.IF.PC)
-            self.nextState.ID.nop = False
-            if self.nextState.ID.instruction_bytes == "1" * 32:
+            instruction_bytes = self.ext_imem.read_instr(self.state.IF.PC)
+            if instruction_bytes == "1" * 32:
+                # HALT detected - don't update ID with HALT, preserve current ID instruction
                 self.nextState.ID.nop = True
                 self.nextState.IF.nop = True
+                self.nextState.ID.instruction_bytes = self.state.ID.instruction_bytes
+                self.print_current_instruction(self.cycle, "IF", "Halt")
             else:
+                # Normal instruction - update ID
+                self.nextState.ID.instruction_bytes = instruction_bytes
+                self.nextState.ID.nop = False
                 self.nextState.IF.PC = self.state.IF.PC + 4
                 self.nextState.IF.instruction_count = self.nextState.IF.instruction_count + 1
-
-            self.print_current_instruction(self.cycle, "IF", self.nextState.ID.instruction_bytes)
+                self.print_current_instruction(self.cycle, "IF", instruction_bytes)
         else:
-            # Create a clean NOP state for ID when IF is nop
+            # IF is nop - preserve ID instruction from previous cycle
             from models import IDState
             id_state = IDState()
             id_state.nop = True
+            id_state.instruction_bytes = self.state.ID.instruction_bytes
             self.nextState.ID = id_state
             self.print_current_instruction(self.cycle, "IF", "nop")
 

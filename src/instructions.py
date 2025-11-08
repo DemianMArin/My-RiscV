@@ -49,10 +49,14 @@ class InstructionBase(metaclass=abc.ABCMeta):
 
     def mem_fs(self, *args, **kwargs):
         wb_state = WBState()
+        # For ALU instructions, store_data = alu_result
+        # For LOAD instructions, store_data = loaded data (set by subclass)
+        # For STORE instructions, store_data = 0 (nothing to write back)
+        store_data_value = self.state.MEM.alu_result if not self.state.MEM.read_data_mem else self.state.MEM.store_data
         wb_state.set_attributes(
             instruction_ob=self.state.MEM.instruction_ob,
             nop=self.state.MEM.nop,
-            store_data=self.state.MEM.store_data,
+            store_data=store_data_value,
             write_register_addr=self.state.MEM.write_register_addr,
             rs1=self.state.MEM.rs1,  # ADD: Propagate rs1 from MEM to WB
             rs2=self.state.MEM.rs2,  # ADD: Propagate rs2 from MEM to WB
@@ -183,10 +187,10 @@ class InstructionRBase(InstructionBase, ABC):
 
         # EX-to-ID forwarding for ALU instructions
         if not self.state.EX.read_data_mem and self.state.EX.write_back_enable and not self.state.EX.write_data_mem and self.state.EX.destination_register == self.rs1 and self.rs1 != 0:
-            ex_state.operand1 = self.nextState.MEM.store_data
+            ex_state.operand1 = self.nextState.MEM.alu_result
 
         if not self.state.EX.read_data_mem and self.state.EX.write_back_enable and not self.state.EX.write_data_mem and self.state.EX.destination_register == self.rs2 and self.rs2 != 0:
-            ex_state.operand2 = self.nextState.MEM.store_data
+            ex_state.operand2 = self.nextState.MEM.alu_result
 
         self.nextState.EX = ex_state
 
@@ -267,7 +271,7 @@ class InstructionIBase(InstructionBase, ABC):
 
         # EX-to-ID forwarding for ALU instructions
         if not self.state.EX.read_data_mem and self.state.EX.write_back_enable and not self.state.EX.write_data_mem and self.state.EX.destination_register == self.rs1 and self.rs1 != 0:
-            ex_state.operand1 = self.nextState.MEM.store_data
+            ex_state.operand1 = self.nextState.MEM.alu_result
 
         self.nextState.EX = ex_state
 
@@ -342,11 +346,11 @@ class InstructionSBase(InstructionBase, ABC):
         # Forwarding
         # EX-to-ID forwarding for ALU instructions
         if not self.state.EX.read_data_mem and self.state.EX.write_back_enable and not self.state.EX.write_data_mem and self.state.EX.destination_register == self.rs1 and self.rs1 != 0:
-            ex_state.operand1 = self.nextState.MEM.store_data
+            ex_state.operand1 = self.nextState.MEM.alu_result
 
         if not self.state.EX.read_data_mem and self.state.EX.write_back_enable and not self.state.EX.write_data_mem and self.state.EX.destination_register == self.rs2 and self.rs2 != 0:
-            ex_state.store_data = self.nextState.MEM.store_data
-            ex_state.operand2 = self.nextState.MEM.store_data
+            ex_state.store_data = self.nextState.MEM.alu_result
+            ex_state.operand2 = self.nextState.MEM.alu_result
 
         # MEM-to-ID forwarding for LOAD instructions
         if self.state.MEM.read_data_mem and self.state.MEM.write_back_enable and not self.state.MEM.write_data_mem and self.state.MEM.write_register_addr == self.rs1 and self.rs1 != 0:
@@ -424,10 +428,10 @@ class InstructionBBase(InstructionBase, ABC):
         operand2 = self.registers.read_rf(self.rs2)
 
         if self.state.EX.write_back_enable and self.state.EX.destination_register != 0 and self.state.EX.destination_register == self.rs1 and self.rs1 != 0:
-            operand1 = self.nextState.MEM.store_data
+            operand1 = self.nextState.MEM.alu_result
 
         if self.state.EX.write_back_enable and self.state.EX.destination_register != 0 and self.state.EX.destination_register == self.rs2 and self.rs2 != 0:
-            operand2 = self.nextState.MEM.store_data
+            operand2 = self.nextState.MEM.alu_result
 
         if self.state.MEM.write_back_enable and self.state.MEM.write_register_addr != 0 and not (
                 self.state.EX.write_back_enable and self.state.EX.destination_register != 0 and self.state.EX.destination_register == self.rs1) and self.state.MEM.write_register_addr == self.rs1 and self.rs1 != 0:
@@ -509,7 +513,7 @@ class ADD(InstructionRBase):
     def execute_fs(self, *args, **kwargs):
         super(ADD, self).execute_fs()
         result = self.state.EX.operand1 + self.state.EX.operand2
-        self.nextState.MEM.store_data = result
+        # Only set alu_result, store_data will be set by mem_fs()
         self.nextState.MEM.alu_result = result
 
 
@@ -525,7 +529,6 @@ class SUB(InstructionRBase):
     def execute_fs(self, *args, **kwargs):
         super(SUB, self).execute_fs()
         result = self.state.EX.operand1 - self.state.EX.operand2
-        self.nextState.MEM.store_data = result
         self.nextState.MEM.alu_result = result
 
 
@@ -541,7 +544,6 @@ class XOR(InstructionRBase):
     def execute_fs(self, *args, **kwargs):
         super(XOR, self).execute_fs()
         result = self.state.EX.operand1 ^ self.state.EX.operand2
-        self.nextState.MEM.store_data = result
         self.nextState.MEM.alu_result = result
 
 
@@ -557,7 +559,6 @@ class OR(InstructionRBase):
     def execute_fs(self, *args, **kwargs):
         super(OR, self).execute_fs()
         result = self.state.EX.operand1 | self.state.EX.operand2
-        self.nextState.MEM.store_data = result
         self.nextState.MEM.alu_result = result
 
 
@@ -572,7 +573,6 @@ class AND(InstructionRBase):
     def execute_fs(self, *args, **kwargs):
         super(AND, self).execute_fs()
         result = self.state.EX.operand1 & self.state.EX.operand2
-        self.nextState.MEM.store_data = result
         self.nextState.MEM.alu_result = result
 
 
@@ -587,7 +587,6 @@ class ADDI(InstructionIBase):
     def execute_fs(self, *args, **kwargs):
         super(ADDI, self).execute_fs()
         result = self.state.EX.operand1 + self.state.EX.imm  # Use imm field for I-type
-        self.nextState.MEM.store_data = result
         self.nextState.MEM.alu_result = result
 
 
@@ -602,7 +601,6 @@ class XORI(InstructionIBase):
     def execute_fs(self, *args, **kwargs):
         super(XORI, self).execute_fs()
         result = self.state.EX.operand1 ^ self.state.EX.imm  # Use imm field for I-type
-        self.nextState.MEM.store_data = result
         self.nextState.MEM.alu_result = result
 
 
@@ -618,7 +616,6 @@ class ORI(InstructionIBase):
     def execute_fs(self, *args, **kwargs):
         super(ORI, self).execute_fs()
         result = self.state.EX.operand1 | self.state.EX.imm  # Use imm field for I-type
-        self.nextState.MEM.store_data = result
         self.nextState.MEM.alu_result = result
 
 
@@ -633,7 +630,6 @@ class ANDI(InstructionIBase):
     def execute_fs(self, *args, **kwargs):
         super(ANDI, self).execute_fs()
         result = self.state.EX.operand1 & self.state.EX.imm  # Use imm field for I-type
-        self.nextState.MEM.store_data = result
         self.nextState.MEM.alu_result = result
 
 
